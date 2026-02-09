@@ -5,7 +5,7 @@ import { MapContainer, TileLayer, Marker, Popup, useMapEvents } from "react-leaf
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { LeafletMouseEvent } from "leaflet";
 import type { FeatureCollection } from "./api";
-import { createPoi, createUnit, fetchPois, fetchUnits } from "./api";
+import { createUnit, fetchUnits } from "./api";
 
 type UnitProps = {
   id: string;
@@ -14,12 +14,6 @@ type UnitProps = {
   unit_type: "INFANTRY" | "ARMOR" | "ARTILLERY" | "UAS";
   echelon?: "SECTION" | "BATTALION" | "BRIGADE";
   sidc?: string;
-};
-
-type PoiProps = {
-  id: string;
-  label: string;
-  category: string;
 };
 
 type PointFeature<P> = GeoJSON.Feature<GeoJSON.Point, P>;
@@ -43,55 +37,34 @@ function makeApp6Icon(sidc: string) {
   });
 }
 
-// MVP SIDC “démo” (APP6/2525-like) : suffisant pour rendre un symbole cohérent et varier l’affiliation.
-// On pourra remplacer par une table SIDC exacte plus tard.
+// MVP SIDC (démo) — suffisant pour rendu milsymbol
 function sidcFor(d: UnitDraft): string {
   const aff = d.side === "FRIEND" ? "F" : d.side === "ENEMY" ? "H" : "N";
-  // Base “ground unit”
-  const base = `S${aff}GPUCI----K`; // infantry-ish
-  if (d.unit_type === "ARMOR") return `S${aff}GPUCA----K`; // armor-ish
-  if (d.unit_type === "ARTILLERY") return `S${aff}GPUCF----K`; // arty-ish
-  if (d.unit_type === "UAS") return `S${aff}AUU-----K--`; // air/uas-ish (démo)
-  return base;
+  if (d.unit_type === "ARMOR") return `S${aff}GPUCA----K`;
+  if (d.unit_type === "ARTILLERY") return `S${aff}GPUCF----K`;
+  if (d.unit_type === "UAS") return `S${aff}AUU-----K--`;
+  return `S${aff}GPUCI----K`;
 }
 
 function MapClickHandler({
-  mode,
-  unitDraft,
-  onCreated,
-  onCancelPlacement,
+  placing,
+  onPlaced,
 }: {
-  mode: "POI" | "UNIT" | null;
-  unitDraft: UnitDraft | null;
-  onCreated: () => void;
-  onCancelPlacement: () => void;
+  placing: UnitDraft | null;
+  onPlaced: () => void;
 }) {
   useMapEvents({
     click: (e: LeafletMouseEvent) => {
       void (async () => {
-        if (mode === "POI") {
-          const label = prompt("Nom du POI ?")?.trim();
-          if (!label) return;
+        if (!placing) return;
 
-          const category = prompt("Catégorie ? (ex: PC, Vehicle, Antenna)")?.trim() || "Unknown";
+        await createUnit({
+          ...placing,
+          lat: e.latlng.lat,
+          lon: e.latlng.lng,
+        });
 
-          await createPoi({
-            label,
-            category,
-            lat: e.latlng.lat,
-            lon: e.latlng.lng,
-          });
-
-          onCreated();
-          return;
-        }
-
-        if (mode === "UNIT" && unitDraft) {
-          await createUnit({ ...unitDraft, lat: e.latlng.lat, lon: e.latlng.lng })
-
-          onCancelPlacement();
-          onCreated();
-        }
+        onPlaced();
       })();
     },
   });
@@ -101,12 +74,10 @@ function MapClickHandler({
 
 function RightToolbar({
   onAddUnit,
-  onPoiMode,
   onCancel,
   placing,
 }: {
   onAddUnit: () => void;
-  onPoiMode: () => void;
   onCancel: () => void;
   placing: boolean;
 }) {
@@ -116,24 +87,26 @@ function RightToolbar({
         position: "absolute",
         right: 12,
         top: 72,
-        zIndex: 1200,
+        zIndex: 9999,
+        pointerEvents: "auto",
         display: "flex",
         flexDirection: "column",
         gap: 10,
       }}
     >
-      <button onClick={() => {
+      <button
+        onClick={() => {
           console.log("ADD UNIT CLICK");
           onAddUnit();
         }}
-        style={toolBtn}>
+        style={toolBtn}
+        title="Add unit"
+      >
         ＋
       </button>
-      <button onClick={onPoiMode} style={toolBtn} title="Créer un POI">
-        ⬤
-      </button>
+
       {placing && (
-        <button onClick={onCancel} style={{ ...toolBtn, opacity: 0.9 }} title="Annuler placement">
+        <button onClick={onCancel} style={{ ...toolBtn, opacity: 0.9 }} title="Cancel placement">
           ✕
         </button>
       )}
@@ -150,6 +123,7 @@ const toolBtn: React.CSSProperties = {
   color: "white",
   cursor: "pointer",
   fontSize: 18,
+  pointerEvents: "auto",
 };
 
 function UnitModal({
@@ -168,17 +142,16 @@ function UnitModal({
 
   if (!open) return null;
 
-  const draft: UnitDraft = {
+  const draftBase: Omit<UnitDraft, "sidc"> = {
     name,
     side,
     unit_type: unitType,
     echelon,
-    sidc: "", // recalculé à la confirmation
   };
 
   return (
     <div style={backdrop} onClick={onClose}>
-        <div style={modal} onClick={(e) => e.stopPropagation()}>
+      <div style={modal} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontWeight: 700 }}>Add unit</div>
           <button style={closeBtn} onClick={onClose}>
@@ -226,7 +199,7 @@ function UnitModal({
 
           <div>
             <label style={label}>Preview SIDC</label>
-            <input style={input} value={sidcFor({ ...draft, sidc: "" })} readOnly />
+            <input style={input} value={sidcFor({ ...draftBase, sidc: "" })} readOnly />
           </div>
         </div>
 
@@ -237,8 +210,8 @@ function UnitModal({
           <button
             style={primaryBtn}
             onClick={() => {
-              const sidc = sidcFor(draft);
-              onConfirm({ ...draft, sidc });
+              const sidc = sidcFor({ ...draftBase, sidc: "" });
+              onConfirm({ ...draftBase, sidc });
             }}
           >
             Place on map
@@ -257,7 +230,9 @@ const backdrop: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
+  pointerEvents: "auto",
 };
+
 const modal: React.CSSProperties = {
   width: 560,
   borderRadius: 16,
@@ -267,7 +242,9 @@ const modal: React.CSSProperties = {
   border: "1px solid rgba(255,255,255,0.12)",
   fontFamily: "system-ui",
 };
+
 const label: React.CSSProperties = { display: "block", marginBottom: 6, opacity: 0.9, fontSize: 12 };
+
 const input: React.CSSProperties = {
   width: "100%",
   padding: "10px 12px",
@@ -276,6 +253,7 @@ const input: React.CSSProperties = {
   background: "rgba(0,0,0,0.25)",
   color: "white",
 };
+
 const closeBtn: React.CSSProperties = { ...input, width: 40, height: 40, padding: 0, cursor: "pointer" };
 const primaryBtn: React.CSSProperties = { ...input, width: "auto", cursor: "pointer", background: "rgba(0,120,255,0.35)" };
 const secondaryBtn: React.CSSProperties = { ...input, width: "auto", cursor: "pointer" };
@@ -284,18 +262,15 @@ export default function App() {
   const center: [number, number] = [48.8566, 2.3522];
 
   const [units, setUnits] = useState<FeatureCollection | null>(null);
-  const [pois, setPois] = useState<FeatureCollection | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const [mode, setMode] = useState<"POI" | "UNIT" | null>(null);
   const [unitModalOpen, setUnitModalOpen] = useState(false);
-  const [unitDraft, setUnitDraft] = useState<UnitDraft | null>(null);
+  const [placing, setPlacing] = useState<UnitDraft | null>(null);
 
   const load = useCallback(async () => {
     try {
       const u = await fetchUnits();
       setUnits(u);
-      setPois({ type: "FeatureCollection", features: [] } as FeatureCollection); // si tu gardes le state pois
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erreur chargement");
@@ -309,7 +284,6 @@ export default function App() {
   }, [load]);
 
   const unitFeatures = useMemo(() => (units?.features ?? []) as Array<PointFeature<UnitProps>>, [units]);
-  const poiFeatures = useMemo(() => (pois?.features ?? []) as Array<PointFeature<PoiProps>>, [pois]);
 
   return (
     <div style={{ height: "100vh", width: "100vw", position: "relative" }}>
@@ -326,12 +300,10 @@ export default function App() {
         />
 
         <MapClickHandler
-          mode={mode}
-          unitDraft={unitDraft}
-          onCreated={load}
-          onCancelPlacement={() => {
-            setMode(null);
-            setUnitDraft(null);
+          placing={placing}
+          onPlaced={() => {
+            setPlacing(null);
+            void load();
           }}
         />
 
@@ -355,34 +327,12 @@ export default function App() {
             </Marker>
           );
         })}
-
-        {/* POIs */}
-        {poiFeatures.map((f) => {
-          const [lon, lat] = f.geometry.coordinates;
-          return (
-            <Marker key={f.properties.id} position={[lat, lon]}>
-              <Popup>
-                <div style={{ fontFamily: "system-ui" }}>
-                  <div style={{ fontWeight: 700 }}>{f.properties.label}</div>
-                  <div>Category: {f.properties.category}</div>
-                </div>
-              </Popup>
-            </Marker>
-          );
-        })}
       </MapContainer>
 
       <RightToolbar
         onAddUnit={() => setUnitModalOpen(true)}
-        onPoiMode={() => {
-          setMode("POI");
-          setUnitDraft(null);
-        }}
-        onCancel={() => {
-          setMode(null);
-          setUnitDraft(null);
-        }}
-        placing={mode !== null}
+        onCancel={() => setPlacing(null)}
+        placing={placing !== null}
       />
 
       <UnitModal
@@ -390,8 +340,7 @@ export default function App() {
         onClose={() => setUnitModalOpen(false)}
         onConfirm={(d) => {
           setUnitModalOpen(false);
-          setUnitDraft(d);
-          setMode("UNIT");
+          setPlacing(d);
         }}
       />
 
@@ -412,23 +361,16 @@ export default function App() {
       >
         <div style={{ fontWeight: 700 }}>C2 Demo</div>
         <div style={{ fontSize: 12, opacity: 0.9 }}>
-          Mode:{" "}
-          {mode === "POI"
-            ? "Créer POI (clic carte)"
-            : mode === "UNIT"
-            ? `Placer unité: ${unitDraft?.name ?? ""} (clic carte)`
-            : "Aucun"}
+          {placing ? `Placement: click map to place ${placing.name}` : "Ready"}
         </div>
-        <div style={{ fontSize: 12, marginTop: 6 }}>
-          Units: {unitFeatures.length} | POIs: {poiFeatures.length}
-        </div>
+        <div style={{ fontSize: 12, marginTop: 6 }}>Units: {unitFeatures.length}</div>
         {error && <div style={{ marginTop: 6, color: "#ffb4b4" }}>{error}</div>}
       </div>
 
-      {/* petit style global */}
       <style>{`
         .app6-marker { background: transparent; border: none; }
         .app6-marker svg { display:block; }
+        .leaflet-container { z-index: 0; }
       `}</style>
     </div>
   );

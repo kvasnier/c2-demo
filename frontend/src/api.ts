@@ -10,22 +10,6 @@ export async function fetchUnits(): Promise<FeatureCollection> {
   return r.json();
 }
 
-export async function fetchPois(): Promise<FeatureCollection> {
-  const r = await fetch(`${API_BASE}/pois`);
-  if (!r.ok) throw new Error("Failed to fetch POIs");
-  return r.json();
-}
-
-export async function createPoi(payload: { label: string; category: string; lat: number; lon: number }) {
-  const r = await fetch(`${API_BASE}/pois`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!r.ok) throw new Error("Failed to create POI");
-  return r.json();
-}
-
 export async function createUnit(input: {
   name: string;
   side: "FRIEND" | "ENEMY" | "NEUTRAL";
