@@ -26,7 +26,7 @@ type UnitDraft = {
   sidc: string;
 };
 
-function makeApp6Icon(sidc: string) {
+/*function makeApp6Icon(sidc: string) {
   const sym = new ms.Symbol(sidc, { size: 40, frame: true });
   const svg = sym.asSVG();
   return L.divIcon({
@@ -35,6 +35,32 @@ function makeApp6Icon(sidc: string) {
     iconSize: [48, 48],
     iconAnchor: [24, 24],
   });
+}*/
+
+function makeApp6Icon(sidc: string, zoom: number) {
+  const size = iconSizeForZoom(zoom);
+
+  const sym = new ms.Symbol(sidc, {
+    size,
+    frame: true,
+  });
+
+  const svg = sym.asSVG();
+
+  return L.divIcon({
+    className: "app6-marker",
+    html: svg,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+  });
+}
+
+function ZoomWatcher({ onZoom }: { onZoom: (z: number) => void }) {
+  useMapEvents({
+    zoom: (e) => onZoom(e.target.getZoom()),
+    zoomend: (e) => onZoom(e.target.getZoom()),
+  });
+  return null;
 }
 
 // MVP SIDC (démo) — suffisant pour rendu milsymbol
@@ -261,6 +287,9 @@ const secondaryBtn: React.CSSProperties = { ...input, width: "auto", cursor: "po
 export default function App() {
   const center: [number, number] = [48.8566, 2.3522];
 
+  // Zoom
+  const [zoom, setZoom] = useState<number>(12);
+
   const [units, setUnits] = useState<FeatureCollection | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -299,6 +328,9 @@ export default function App() {
           maxZoom={19}
         />
 
+        // Watch zoom level to adjust unit icon sizes 
+        <ZoomWatcher onZoom={setZoom} />
+
         <MapClickHandler
           placing={placing}
           onPlaced={() => {
@@ -311,7 +343,8 @@ export default function App() {
         {unitFeatures.map((f) => {
           const [lon, lat] = f.geometry.coordinates;
           const sidc = f.properties.sidc;
-          const icon = sidc ? makeApp6Icon(sidc) : undefined;
+          //const icon = sidc ? makeApp6Icon(sidc) : undefined;
+          const icon = sidc ? makeApp6Icon(sidc, zoom) : undefined;
 
           return (
             <Marker key={f.properties.id} position={[lat, lon]} icon={icon}>
@@ -374,4 +407,21 @@ export default function App() {
       `}</style>
     </div>
   );
+}
+
+function iconSizeForZoom(zoom: number): number {
+  const min = 8;    // très petit au dézoom
+  const max = 48;
+
+  const zMin = 4;
+  const zMax = 16;
+
+  const clamped = Math.max(zMin, Math.min(zMax, zoom));
+  let t = (clamped - zMin) / (zMax - zMin);
+
+  // Non-linéaire : shrink plus agressif quand t est bas
+  // (t^1.7 → plus petit rapidement au dézoom)
+  t = Math.pow(t, 1.7);
+
+  return Math.round(min + t * (max - min));
 }
