@@ -1,125 +1,102 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
-from sqlalchemy import text
+from pydantic import BaseModel
+from typing import Literal, Any, Dict
 from uuid import uuid4
+import asyncpg
 import os
 
-from .db import get_db
-from .schemas import UnitCreate, POICreate, IdResponse
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://c2:c2@db:5432/c2")
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
 
-app = FastAPI(title="C2 Demo API", version="0.2.0")
+app = FastAPI()
 
-cors = os.getenv("CORS_ORIGINS", "http://localhost:5173")
-origins = [o.strip() for o in cors.split(",") if o.strip()]
-
+allow_origins = [o.strip() for o in CORS_ORIGINS.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+class UnitCreate(BaseModel):
+    name: str
+    side: Literal["FRIEND", "ENEMY", "NEUTRAL"]
+    unit_type: Literal["INFANTRY", "ARMOR", "ARTILLERY", "UAS"]
+    echelon: Literal["SECTION", "BATTALION", "BRIGADE"]
+    sidc: str
+    lat: float
+    lon: float
 
-# --- Units as GeoJSON ---
+async def get_conn():
+    return await asyncpg.connect(DATABASE_URL)
+
+def to_feature(row: asyncpg.Record) -> Dict[str, Any]:
+    return {
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [row["lon"], row["lat"]]},
+        "properties": {
+            "id": str(row["id"]),
+            "name": row["name"],
+            "side": row["side"],
+            "unit_type": row["unit_type"],
+            "echelon": row["echelon"],
+            "sidc": row["sidc"],
+        },
+    }
+
 @app.get("/units")
-def list_units(db: Session = Depends(get_db)):
-    sql = text("""
-      SELECT id, name, side, unit_type,
-             ST_Y(geom::geometry) AS lat,
-             ST_X(geom::geometry) AS lon
-      FROM units
-      ORDER BY created_at DESC
-    """)
+async def list_units():
+    conn = await get_conn()
+    try:
+        rows = await conn.fetch(
+            """
+            SELECT
+              id, name, side, unit_type, echelon, sidc,
+              ST_Y(geom)::float8 AS lat,
+              ST_X(geom)::float8 AS lon
+            FROM units
+            ORDER BY created_at DESC
+            """
+        )
+        return {"type": "FeatureCollection", "features": [to_feature(r) for r in rows]}
+    finally:
+        await conn.close()
 
-    rows = db.execute(sql).mappings().all()
+@app.post("/units")
+async def create_unit(payload: UnitCreate):
+    conn = await get_conn()
+    try:
+        uid = uuid4()
+        await conn.execute(
+            """
+            INSERT INTO units (id, name, side, unit_type, echelon, sidc, geom)
+            VALUES ($1, $2, $3, $4, $5, $6, ST_SetSRID(ST_MakePoint($7, $8), 4326))
+            """,
+            uid,
+            payload.name,
+            payload.side,
+            payload.unit_type,
+            payload.echelon,
+            payload.sidc,
+            payload.lon,  # lon d'abord
+            payload.lat,  # puis lat
+        )
 
-    return {
-      "type": "FeatureCollection",
-      "features": [
-        {
-          "type": "Feature",
-          "geometry": {"type": "Point", "coordinates": [r["lon"], r["lat"]]},
-          "properties": {
-            "id": str(r["id"]),
-            "name": r["name"],
-            "side": r["side"],
-            "unit_type": r["unit_type"],
-          },
+        # retourne la feature créée
+        row = {
+            "id": uid,
+            "name": payload.name,
+            "side": payload.side,
+            "unit_type": payload.unit_type,
+            "echelon": payload.echelon,
+            "sidc": payload.sidc,
+            "lat": payload.lat,
+            "lon": payload.lon,
         }
-        for r in rows
-      ],
-    }
-
-@app.post("/units", response_model=IdResponse)
-def create_unit(payload: UnitCreate, db: Session = Depends(get_db)):
-    new_id = uuid4()
-
-    sql = text("""
-      INSERT INTO units (id, name, side, unit_type, geom)
-      VALUES (:id, :name, :side, :unit_type, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326))
-    """)
-
-    db.execute(sql, {
-        "id": new_id,
-        "name": payload.name,
-        "side": payload.side,
-        "unit_type": payload.unit_type,
-        "lat": payload.lat,
-        "lon": payload.lon,
-    })
-    db.commit()
-    return {"id": new_id}
-
-
-# --- POIs as GeoJSON ---
-@app.get("/pois")
-def list_pois(db: Session = Depends(get_db)):
-    sql = text("""
-      SELECT id, label, category,
-             ST_Y(geom::geometry) AS lat,
-             ST_X(geom::geometry) AS lon
-      FROM pois
-      ORDER BY created_at DESC
-    """)
-
-    rows = db.execute(sql).mappings().all()
-
-    return {
-      "type": "FeatureCollection",
-      "features": [
-        {
-          "type": "Feature",
-          "geometry": {"type": "Point", "coordinates": [r["lon"], r["lat"]]},
-          "properties": {
-            "id": str(r["id"]),
-            "label": r["label"],
-            "category": r["category"],
-          },
-        }
-        for r in rows
-      ],
-    }
-
-@app.post("/pois", response_model=IdResponse)
-def create_poi(payload: POICreate, db: Session = Depends(get_db)):
-    new_id = uuid4()
-
-    sql = text("""
-      INSERT INTO pois (id, label, category, geom)
-      VALUES (:id, :label, :category, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326))
-    """)
-
-    db.execute(sql, {
-        "id": new_id,
-        "label": payload.label,
-        "category": payload.category,
-        "lat": payload.lat,
-        "lon": payload.lon,
-    })
-    db.commit()
-    return {"id": new_id}
+        class R(dict):
+            def __getitem__(self, k): return dict.get(self, k)
+        return to_feature(R(row))
+    finally:
+        await conn.close()

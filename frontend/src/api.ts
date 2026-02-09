@@ -26,18 +26,20 @@ export async function createPoi(payload: { label: string; category: string; lat:
   return r.json();
 }
 
-export async function createUnit(payload: {
+export async function createUnit(input: {
   name: string;
   side: "FRIEND" | "ENEMY" | "NEUTRAL";
-  unit_type: string;
+  unit_type: "INFANTRY" | "ARMOR" | "ARTILLERY" | "UAS";
+  echelon: "SECTION" | "BATTALION" | "BRIGADE";
+  sidc: string;
   lat: number;
   lon: number;
 }) {
   const r = await fetch(`${API_BASE}/units`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(input),
   });
-  if (!r.ok) throw new Error("Failed to create unit");
+  if (!r.ok) throw new Error(`POST /units failed: ${r.status}`);
   return r.json();
 }
