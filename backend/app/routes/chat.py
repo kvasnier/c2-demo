@@ -1,3 +1,6 @@
+import os
+from pathlib import Path
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -22,6 +25,23 @@ class ChatResponse(BaseModel):
 def chat(req: ChatRequest):
     last_user = next((m.content for m in reversed(req.messages) if m.role == "user"), "")
     actions: list[ChatAction] = []
+    normalized = " ".join(last_user.lower().strip().split())
+
+    if "rus-hq-comint" in normalized:
+        configured_url = os.getenv("COMINT_VIDEO_URL", "/media/airbushlt_rus_trs_trad.mkv")
+        if configured_url.startswith("/home/"):
+            # Convert a local filesystem path into the served media endpoint.
+            configured_url = f"/media/{Path(configured_url).name}"
+        video_url = configured_url
+        return ChatResponse(
+            reply=(
+                "RUS-HQ-COMINT\n"
+                "Origin : intercep COMINT\n"
+                "Position : [48.247165, 39.950965]\n\n"
+                f"Analyse : [intercept_communication]({video_url})"
+            ),
+            actions=[],
+        )
 
     if "drone" in last_user.lower():
         actions.append(

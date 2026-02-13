@@ -1,18 +1,21 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, field_validator
 from typing import Any, Dict
-from uuid import uuid4
+from uuid import UUID, uuid4
 from app.routes.chat import router as chat_router
 import asyncpg
 import asyncio
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://c2:c2@db:5432/c2")
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
 SCENARIO_SQL_PATH = os.getenv("SCENARIO_SQL_PATH", "/scenario/010_scenario_units.sql")
 SCENARIO_BACKUP_DIR = os.getenv("SCENARIO_BACKUP_DIR", "/tmp/c2-scenario-backups")
+MEDIA_DIR = Path(os.getenv("MEDIA_DIR", "/app/data")).resolve()
 APP_BOOT_ID = datetime.now(timezone.utc).isoformat()
 
 app = FastAPI()
@@ -180,6 +183,20 @@ def to_feature(row: asyncpg.Record) -> Dict[str, Any]:
 async def health():
     return {"status": "ok", "boot_id": APP_BOOT_ID}
 
+@app.get("/media/{filename}")
+async def get_media(filename: str):
+    safe_name = os.path.basename(filename)
+    media_path = (MEDIA_DIR / safe_name).resolve()
+
+    if media_path.parent != MEDIA_DIR:
+        raise HTTPException(status_code=400, detail="Invalid media path")
+    if not media_path.exists() or not media_path.is_file():
+        raise HTTPException(status_code=404, detail="Media file not found")
+
+    suffix = media_path.suffix.lower()
+    media_type = "video/x-matroska" if suffix == ".mkv" else None
+    return FileResponse(str(media_path), media_type=media_type, filename=safe_name)
+
 def load_scenario_insert_statements(path: str) -> list[str]:
     if not os.path.exists(path):
         raise FileNotFoundError(path)
@@ -301,5 +318,17 @@ async def create_unit(payload: UnitCreate):
         class R(dict):
             def __getitem__(self, k): return dict.get(self, k)
         return to_feature(R(row))
+    finally:
+        await conn.close()
+
+
+@app.delete("/units/{unit_id}")
+async def delete_unit(unit_id: UUID):
+    conn = await get_conn()
+    try:
+        row = await conn.fetchrow("DELETE FROM units WHERE id = $1 RETURNING id", unit_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Unit not found")
+        return {"ok": True, "id": str(row["id"])}
     finally:
         await conn.close()

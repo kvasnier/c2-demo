@@ -5,7 +5,7 @@ import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from "re
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LeafletMouseEvent, Marker as LeafletMarker } from "leaflet";
 import type { FeatureCollection } from "./api";
-import { createUnit, fetchHealth, fetchUnits, resetScenario } from "./api";
+import { API_BASE, createUnit, deleteUnit, fetchHealth, fetchUnits, resetScenario } from "./api";
 import { ChatPanel } from "./components/ChatPanel";
 
 type Side = "FRIEND" | "ENEMY" | "NEUTRAL" | "UNKNOWN";
@@ -372,6 +372,70 @@ function ComintAlert({
   );
 }
 
+function VideoOverlay({
+  title,
+  src,
+  onClose,
+}: {
+  title: string;
+  src: string;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        zIndex: 30000,
+        background: "rgba(0,0,0,0.55)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <div
+        style={{
+          position: "relative",
+          width: "min(72vw, 980px)",
+          maxHeight: "80vh",
+          borderRadius: 12,
+          border: "1px solid rgba(255,255,255,0.18)",
+          background: "rgba(10,12,16,0.98)",
+          padding: 10,
+          boxShadow: "0 10px 30px rgba(0,0,0,0.45)",
+        }}
+      >
+        <button
+          onClick={onClose}
+          title="Close video"
+          style={{
+            position: "absolute",
+            top: 8,
+            right: 8,
+            width: 26,
+            height: 26,
+            borderRadius: 999,
+            border: "1px solid rgba(255,255,255,0.3)",
+            background: "rgba(0,0,0,0.6)",
+            color: "white",
+            cursor: "pointer",
+            lineHeight: 1,
+          }}
+        >
+          ×
+        </button>
+        <div style={{ color: "rgba(255,255,255,0.88)", fontSize: 12, margin: "2px 4px 8px 4px" }}>{title}</div>
+        <video
+          controls
+          autoPlay
+          src={src}
+          style={{ width: "100%", height: "auto", maxHeight: "72vh", borderRadius: 8, background: "black" }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function UnitModal({
   open,
   onClose,
@@ -526,6 +590,7 @@ export default function App() {
   const [scenarioHQFeature, setScenarioHQFeature] = useState<PointFeature<UnitProps> | null>(null);
   const [mapFocusRequest, setMapFocusRequest] = useState<FocusRequest | null>(null);
   const [selectedUnitId, setSelectedUnitId] = useState<string | null>(null);
+  const [videoOverlay, setVideoOverlay] = useState<{ title: string; url: string } | null>(null);
 
   const [unitModalOpen, setUnitModalOpen] = useState(false);
   const [placing, setPlacing] = useState<UnitDraft | null>(null);
@@ -602,6 +667,7 @@ export default function App() {
           bootIdRef.current = status.boot_id;
           setPlacing(null);
           setUnitModalOpen(false);
+          setVideoOverlay(null);
           setChatResetToken((v) => v + 1);
           const loaded = await load();
           if (stopped) return;
@@ -632,6 +698,7 @@ export default function App() {
         await resetScenario();
         setPlacing(null);
         setUnitModalOpen(false);
+        setVideoOverlay(null);
         setChatResetToken((v) => v + 1);
         const loaded = await load();
         scheduleScenarioAlert(loaded);
@@ -656,6 +723,35 @@ export default function App() {
     setScenarioAlertOpen(false);
   }, [scenarioHQFeature]);
 
+  const handleChatLinkClick = useCallback((url: string) => {
+    const resolved = url.startsWith("http://") || url.startsWith("https://") ? url : `${API_BASE}${url}`;
+    const lower = resolved.toLowerCase();
+    if (lower.endsWith(".mkv") || lower.includes("/media/")) {
+      const title = resolved.split("/").pop() ?? "video";
+      setVideoOverlay({ title, url: resolved });
+      return;
+    }
+    window.open(resolved, "_blank", "noopener,noreferrer");
+  }, []);
+
+  const handleUnitRightClickDelete = useCallback(
+    async (unitId: string, unitName: string) => {
+      const shouldDelete = window.confirm(`Supprimer l'unite "${unitName}" ?`);
+      if (!shouldDelete) return;
+
+      try {
+        await deleteUnit(unitId);
+        if (selectedUnitId === unitId) {
+          setSelectedUnitId(null);
+        }
+        await load();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Erreur suppression unite");
+      }
+    },
+    [load, selectedUnitId]
+  );
+
   const unitFeatures = useMemo(() => (units?.features ?? []) as Array<PointFeature<UnitProps>>, [units]);
 
   useEffect(() => {
@@ -679,6 +775,7 @@ export default function App() {
       >
         <ChatPanel
           resetToken={chatResetToken}
+          onLinkClick={handleChatLinkClick}
           onActions={(actions) => {
             // Pour l’instant on log ; ensuite on dispatchera vers createUnit/load/etc.
             console.log("Chat actions:", actions);
@@ -731,6 +828,14 @@ export default function App() {
                 key={f.properties.id}
                 position={[lat, lon]}
                 icon={icon}
+                eventHandlers={{
+                  contextmenu: (e) => {
+                    if (e.originalEvent) {
+                      L.DomEvent.preventDefault(e.originalEvent);
+                    }
+                    void handleUnitRightClickDelete(f.properties.id, f.properties.name);
+                  },
+                }}
                 ref={(marker) => {
                   if (marker) {
                     markerRefs.current[f.properties.id] = marker;
@@ -805,6 +910,10 @@ export default function App() {
           .leaflet-container { z-index: 0; }
         `}</style>
       </div>
+
+      {videoOverlay && (
+        <VideoOverlay title={videoOverlay.title} src={videoOverlay.url} onClose={() => setVideoOverlay(null)} />
+      )}
     </div>
   );
 }

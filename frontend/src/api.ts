@@ -74,6 +74,23 @@ export async function createUnit(input: {
   }
 }
 
+export async function deleteUnit(unitId: string): Promise<{ ok: boolean; id: string }> {
+  try {
+    const r = await fetch(`${API_BASE}/units/${unitId}`, {
+      method: "DELETE",
+    });
+    if (!r.ok) throw new Error(`DELETE /units/${unitId} failed: ${r.status}`);
+    return r.json();
+  } catch (err) {
+    if (err instanceof TypeError) {
+      throw new Error(
+        `Impossible de joindre l'API (${API_BASE}). Verifie que le backend est demarre et accessible.`
+      );
+    }
+    throw err;
+  }
+}
+
 export async function resetScenario(): Promise<{ ok: boolean; restored_units: number; backup_path: string }> {
   try {
     const r = await fetch(`${API_BASE}/scenario/reset`, {

@@ -9,6 +9,7 @@ dist/
 .vite/
 
 # Env
+infra/.env
 .env
 .env.*
 
@@ -19,3 +20,7 @@ dist/
 .vSCode/
 .idea/
 .DS_Store
+
+# Data
+data/*
+

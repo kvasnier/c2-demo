@@ -44,10 +44,13 @@ services:
       CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174
       SCENARIO_SQL_PATH: /scenario/010_scenario_units.sql
       SCENARIO_BACKUP_DIR: /scenario/backups
+      MEDIA_DIR: /app/data
+      COMINT_VIDEO_URL: http://localhost:8000/media/airbushlt_rus_trs_trad.mkv
     ports:
       - "8000:8000"
     volumes:
       - ./scenario:/scenario
+      - ../data/data:/app/data:ro
     depends_on:
       db:
         condition: service_healthy

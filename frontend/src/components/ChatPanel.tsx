@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { API_BASE } from "../api";
 
 type ChatMsg = { role: "user" | "assistant" | "system"; content: string };
@@ -7,6 +8,7 @@ type ChatAction = {
   payload: Record<string, unknown>;
 };
 type ChatResponse = { reply: string; actions?: ChatAction[] };
+const COMINT_ANALYSIS_URL = "/media/airbushlt_rus_trs_trad.mkv";
 
 const INITIAL_MESSAGES: ChatMsg[] = [
   { role: "assistant", content: "Chat C2 prêt. Dis-moi quoi faire (ex: “liste les drones dispo”)." },
@@ -15,9 +17,11 @@ const INITIAL_MESSAGES: ChatMsg[] = [
 export function ChatPanel({
   onActions,
   resetToken,
+  onLinkClick,
 }: {
   onActions: (a: ChatAction[]) => void;
   resetToken: number;
+  onLinkClick?: (url: string) => void;
 }) {
   const [messages, setMessages] = useState<ChatMsg[]>([
     ...INITIAL_MESSAGES,
@@ -66,6 +70,43 @@ export function ChatPanel({
     }
   }
 
+  function renderMessageContent(content: string): ReactNode {
+    const linkPattern = /\[([^\]]+)\]\((https?:\/\/[^\s)]+|\/[^\s)]+)\)|\b(intercept_communication)\b/g;
+    const parts: ReactNode[] = [];
+    let lastIndex = 0;
+    let match: RegExpExecArray | null = null;
+    let key = 0;
+
+    while ((match = linkPattern.exec(content)) !== null) {
+      if (match.index > lastIndex) parts.push(content.slice(lastIndex, match.index));
+
+      const isMarkdownLink = Boolean(match[1] && match[2]);
+      const label = isMarkdownLink ? match[1] : "intercept_communication";
+      const url = isMarkdownLink ? match[2] : COMINT_ANALYSIS_URL;
+      parts.push(
+        <a
+          key={`msg-link-${key++}`}
+          href={url}
+          onClick={(e) => {
+            if (!onLinkClick) return;
+            e.preventDefault();
+            onLinkClick(url);
+          }}
+          target={onLinkClick ? undefined : "_blank"}
+          rel={onLinkClick ? undefined : "noopener noreferrer"}
+          style={{ color: "#8ac8ff", textDecoration: "underline" }}
+        >
+          {label}
+        </a>
+      );
+      lastIndex = match.index + match[0].length;
+    }
+
+    if (parts.length === 0) return content;
+    if (lastIndex < content.length) parts.push(content.slice(lastIndex));
+    return <>{parts}</>;
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%", minHeight: 0 }}>
       <div style={{ padding: 12, borderBottom: "1px solid #222" }}>
@@ -87,7 +128,7 @@ export function ChatPanel({
                 border: "1px solid #222",
               }}
             >
-              {m.content}
+              {renderMessageContent(m.content)}
             </div>
           </div>
         ))}
