@@ -91,6 +91,31 @@ export async function deleteUnit(unitId: string): Promise<{ ok: boolean; id: str
   }
 }
 
+export async function updateUnit(
+  unitId: string,
+  input: {
+    side?: Side;
+    sidc?: string;
+  }
+) {
+  try {
+    const r = await fetch(`${API_BASE}/units/${unitId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    if (!r.ok) throw new Error(`PATCH /units/${unitId} failed: ${r.status}`);
+    return r.json();
+  } catch (err) {
+    if (err instanceof TypeError) {
+      throw new Error(
+        `Impossible de joindre l'API (${API_BASE}). Verifie que le backend est demarre et accessible.`
+      );
+    }
+    throw err;
+  }
+}
+
 export async function resetScenario(): Promise<{ ok: boolean; restored_units: number; backup_path: string }> {
   try {
     const r = await fetch(`${API_BASE}/scenario/reset`, {

@@ -8,7 +8,11 @@ type ChatAction = {
   payload: Record<string, unknown>;
 };
 type ChatResponse = { reply: string; actions?: ChatAction[] };
+type ExternalPrompt = { key: number; content: string };
 const COMINT_ANALYSIS_URL = "/media/airbushlt_rus_trs_trad.mkv";
+const THINKING_FRAMES = ["", ".", "..", "..."] as const;
+const THINKING_MIN_MS = 1000;
+const THINKING_MAX_MS = 3000;
 
 const INITIAL_MESSAGES: ChatMsg[] = [
   { role: "assistant", content: "Chat C2 prêt. Dis-moi quoi faire (ex: “liste les drones dispo”)." },
@@ -18,16 +22,21 @@ export function ChatPanel({
   onActions,
   resetToken,
   onLinkClick,
+  onLinkHover,
+  externalPrompt,
 }: {
   onActions: (a: ChatAction[]) => void;
   resetToken: number;
-  onLinkClick?: (url: string) => void;
+  onLinkClick?: (url: string, label?: string) => void;
+  onLinkHover?: (url: string, isHovering: boolean) => void;
+  externalPrompt?: ExternalPrompt | null;
 }) {
   const [messages, setMessages] = useState<ChatMsg[]>([
     ...INITIAL_MESSAGES,
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [thinkingFrame, setThinkingFrame] = useState(0);
 
   const canSend = useMemo(() => input.trim().length > 0 && !loading, [input, loading]);
 
@@ -35,13 +44,40 @@ export function ChatPanel({
     setMessages([]);
     setInput("");
     setLoading(false);
+    setThinkingFrame(0);
   }, [resetToken]);
 
-  async function send() {
-    if (!canSend) return;
-    const next = [...messages, { role: "user", content: input.trim() } as ChatMsg];
+  useEffect(() => {
+    if (!loading) {
+      setThinkingFrame(0);
+      return;
+    }
+    const intervalId = window.setInterval(() => {
+      setThinkingFrame((v) => (v + 1) % THINKING_FRAMES.length);
+    }, 250);
+    return () => window.clearInterval(intervalId);
+  }, [loading]);
+
+  function randomThinkingMs(): number {
+    return THINKING_MIN_MS + Math.floor(Math.random() * (THINKING_MAX_MS - THINKING_MIN_MS + 1));
+  }
+
+  async function waitForThinking(startedAt: number, targetMs: number) {
+    const elapsed = Date.now() - startedAt;
+    if (elapsed >= targetMs) return;
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, targetMs - elapsed);
+    });
+  }
+
+  async function sendPrompt(prompt: string) {
+    const trimmed = prompt.trim();
+    if (!trimmed || loading) return;
+
+    const startedAt = Date.now();
+    const thinkingTargetMs = randomThinkingMs();
+    const next = [...messages, { role: "user", content: trimmed } as ChatMsg];
     setMessages(next);
-    setInput("");
     setLoading(true);
 
     try {
@@ -53,11 +89,13 @@ export function ChatPanel({
 
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const data = (await r.json()) as ChatResponse;
+      await waitForThinking(startedAt, thinkingTargetMs);
 
       setMessages((m) => [...m, { role: "assistant", content: data.reply ?? "(no text)" }]);
       const actions = data.actions ?? [];
       if (actions.length) onActions(actions);
     } catch (e) {
+    await waitForThinking(startedAt, thinkingTargetMs);
     const message =
         e instanceof Error ? e.message : "Erreur inconnue";
 
@@ -69,6 +107,18 @@ export function ChatPanel({
       setLoading(false);
     }
   }
+
+  async function send() {
+    if (!canSend) return;
+    const prompt = input.trim();
+    setInput("");
+    await sendPrompt(prompt);
+  }
+
+  useEffect(() => {
+    if (!externalPrompt) return;
+    void sendPrompt(externalPrompt.content);
+  }, [externalPrompt?.key]);
 
   function renderMessageContent(content: string): ReactNode {
     const linkPattern = /\[([^\]]+)\]\((https?:\/\/[^\s)]+|\/[^\s)]+)\)|\b(intercept_communication)\b/g;
@@ -90,8 +140,10 @@ export function ChatPanel({
           onClick={(e) => {
             if (!onLinkClick) return;
             e.preventDefault();
-            onLinkClick(url);
+            onLinkClick(url, label);
           }}
+          onMouseEnter={() => onLinkHover?.(url, true)}
+          onMouseLeave={() => onLinkHover?.(url, false)}
           target={onLinkClick ? undefined : "_blank"}
           rel={onLinkClick ? undefined : "noopener noreferrer"}
           style={{ color: "#8ac8ff", textDecoration: "underline" }}
@@ -132,6 +184,22 @@ export function ChatPanel({
             </div>
           </div>
         ))}
+        {loading && (
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 12, opacity: 0.65, marginBottom: 4 }}>Assistant</div>
+            <div
+              style={{
+                whiteSpace: "pre-wrap",
+                padding: 10,
+                borderRadius: 10,
+                border: "1px solid #2a3440",
+                color: "rgba(230,245,255,0.88)",
+              }}
+            >
+              {`réflexion en cours${THINKING_FRAMES[thinkingFrame]}`}
+            </div>
+          </div>
+        )}
       </div>
 
       <div style={{ padding: 12, borderTop: "1px solid #222", display: "flex", gap: 8 }}>

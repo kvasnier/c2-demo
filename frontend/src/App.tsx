@@ -1,11 +1,11 @@
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import ms from "milsymbol";
-import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, Polyline, Tooltip, useMap, useMapEvents } from "react-leaflet";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LeafletMouseEvent, Marker as LeafletMarker } from "leaflet";
 import type { FeatureCollection } from "./api";
-import { API_BASE, createUnit, deleteUnit, fetchHealth, fetchUnits, resetScenario } from "./api";
+import { API_BASE, createUnit, deleteUnit, fetchHealth, fetchUnits, resetScenario, updateUnit } from "./api";
 import { ChatPanel } from "./components/ChatPanel";
 
 type Side = "FRIEND" | "ENEMY" | "NEUTRAL" | "UNKNOWN";
@@ -57,6 +57,34 @@ type UnitDraft = {
   unit_type: UnitType;
   echelon: Echelon;
   sidc: string;
+};
+
+type MissionOrderDraft = {
+  title: string;
+  situation: string;
+  mission: string;
+  execution: string;
+  soutien: string;
+  commandementTransmissions: string;
+  droneId: string;
+  droneName: string;
+};
+
+type ChatAction = {
+  type: string;
+  payload: Record<string, unknown>;
+};
+
+type ExternalChatPrompt = {
+  key: number;
+  content: string;
+};
+
+type ReconOrderGraphic = {
+  droneId: string;
+  droneName: string;
+  from: [number, number];
+  to: [number, number];
 };
 
 const APP6_BY_UNIT_TYPE: Record<UnitType, { dimension: "G" | "A"; functionId: string; label: string }> = {
@@ -117,6 +145,7 @@ const DRONE_UNIT_TYPES: UnitType[] = [
 ];
 
 const SCENARIO_HQ = {
+  name: "RUS-HQ-COMINT",
   side: "UNKNOWN" as const,
   unit_type: "COMMAND_POST" as const,
   echelon: "BRIGADE" as const,
@@ -124,8 +153,103 @@ const SCENARIO_HQ = {
   lon: 39.950965,
 };
 
-function makeApp6Icon(sidc: string, zoom: number) {
-  const size = iconSizeForZoom(zoom);
+const RECON_LINK_PREFIX = "/map/uav-recon/";
+
+function normalizeUnitName(name: string): string {
+  return name.trim().toUpperCase();
+}
+
+function extractPathFromUrl(url: string): string {
+  if (url.startsWith("http://") || url.startsWith("https://")) {
+    try {
+      return new URL(url).pathname;
+    } catch {
+      return "";
+    }
+  }
+  return url;
+}
+
+function reconUnitNameFromLink(url: string): string | null {
+  const path = extractPathFromUrl(url);
+  if (!path.startsWith(RECON_LINK_PREFIX)) return null;
+  const encodedName = path.slice(RECON_LINK_PREFIX.length);
+  if (!encodedName) return null;
+  try {
+    return normalizeUnitName(decodeURIComponent(encodedName));
+  } catch {
+    return null;
+  }
+}
+
+function payloadString(payload: Record<string, unknown>, key: string, fallback: string): string {
+  const value = payload[key];
+  return typeof value === "string" ? value : fallback;
+}
+
+const EARTH_RADIUS_M = 6371000;
+
+function toRad(v: number): number {
+  return (v * Math.PI) / 180;
+}
+
+function toDeg(v: number): number {
+  return (v * 180) / Math.PI;
+}
+
+function haversineMeters(a: [number, number], b: [number, number]): number {
+  const [lat1, lon1] = a;
+  const [lat2, lon2] = b;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const la1 = toRad(lat1);
+  const la2 = toRad(lat2);
+
+  const h =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(la1) * Math.cos(la2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return 2 * EARTH_RADIUS_M * Math.asin(Math.sqrt(h));
+}
+
+function moveTowards(a: [number, number], b: [number, number], stepMeters: number): [number, number] {
+  const dist = haversineMeters(a, b);
+  if (dist <= 1e-6 || stepMeters >= dist) return b;
+  const t = stepMeters / dist;
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+}
+
+function bearingRadians(from: [number, number], to: [number, number]): number {
+  const [lat1, lon1] = from;
+  const [lat2, lon2] = to;
+  const phi1 = toRad(lat1);
+  const phi2 = toRad(lat2);
+  const dLon = toRad(lon2 - lon1);
+  const y = Math.sin(dLon) * Math.cos(phi2);
+  const x = Math.cos(phi1) * Math.sin(phi2) - Math.sin(phi1) * Math.cos(phi2) * Math.cos(dLon);
+  return Math.atan2(y, x);
+}
+
+function destinationPoint(center: [number, number], distanceMeters: number, bearingRad: number): [number, number] {
+  const [lat, lon] = center;
+  const phi1 = toRad(lat);
+  const lambda1 = toRad(lon);
+  const delta = distanceMeters / EARTH_RADIUS_M;
+
+  const phi2 = Math.asin(
+    Math.sin(phi1) * Math.cos(delta) + Math.cos(phi1) * Math.sin(delta) * Math.cos(bearingRad)
+  );
+  const lambda2 =
+    lambda1 +
+    Math.atan2(
+      Math.sin(bearingRad) * Math.sin(delta) * Math.cos(phi1),
+      Math.cos(delta) - Math.sin(phi1) * Math.sin(phi2)
+    );
+
+  return [toDeg(phi2), toDeg(lambda2)];
+}
+
+function makeApp6Icon(sidc: string, zoom: number, highlighted = false) {
+  const size = iconSizeForZoom(zoom) + (highlighted ? 6 : 0);
 
   const sym = new ms.Symbol(sidc, {
     size,
@@ -135,7 +259,7 @@ function makeApp6Icon(sidc: string, zoom: number) {
   const svg = sym.asSVG();
 
   return L.divIcon({
-    className: "app6-marker",
+    className: highlighted ? "app6-marker app6-marker-highlighted" : "app6-marker",
     html: svg,
     iconSize: [size, size],
     iconAnchor: [size / 2, size / 2],
@@ -176,9 +300,12 @@ function MapFocusController({ request }: { request: FocusRequest | null }) {
 }
 
 function findScenarioHQFeature(features: Array<PointFeature<UnitProps>>): PointFeature<UnitProps> | null {
-  const tolerance = 1e-6;
+  const tolerance = 1e-4;
   return (
     features.find((f) => {
+      const normalizedName = (f.properties.name ?? "").trim().toUpperCase();
+      if (normalizedName === SCENARIO_HQ.name) return true;
+
       const [lon, lat] = f.geometry.coordinates;
       return (
         f.properties.side === SCENARIO_HQ.side &&
@@ -372,6 +499,119 @@ function ComintAlert({
   );
 }
 
+function OrderSentNotice({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose: () => void;
+}) {
+  if (!open) return null;
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        right: 54,
+        bottom: 132,
+        zIndex: 1250,
+        width: 220,
+        padding: 10,
+        borderRadius: 10,
+        border: "1px solid rgba(150,220,160,0.45)",
+        background: "rgba(10, 34, 14, 0.9)",
+        color: "#ddffe0",
+        fontFamily: "system-ui",
+      }}
+    >
+      <button
+        onClick={onClose}
+        title="Fermer"
+        style={{
+          position: "absolute",
+          top: 6,
+          left: 6,
+          width: 18,
+          height: 18,
+          borderRadius: 999,
+          border: "1px solid rgba(255,255,255,0.3)",
+          background: "rgba(0,0,0,0.3)",
+          color: "white",
+          cursor: "pointer",
+          lineHeight: 1,
+          fontSize: 11,
+          padding: 0,
+        }}
+      >
+        ×
+      </button>
+      <div style={{ fontSize: 13, fontWeight: 700, marginLeft: 24 }}>Ordre envoyé</div>
+    </div>
+  );
+}
+
+function DroneDataAlert({
+  open,
+  droneName,
+  onClose,
+  onWatch,
+}: {
+  open: boolean;
+  droneName: string;
+  onClose: () => void;
+  onWatch: () => void;
+}) {
+  if (!open) return null;
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        right: 54,
+        bottom: 172,
+        zIndex: 1260,
+        width: 340,
+        padding: 10,
+        borderRadius: 10,
+        border: "1px solid rgba(120,200,255,0.45)",
+        background: "rgba(8, 18, 30, 0.92)",
+        color: "#dff3ff",
+        fontFamily: "system-ui",
+      }}
+    >
+      <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Donnée drone {droneName} reçues</div>
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <button
+          onClick={onClose}
+          style={{
+            border: "1px solid rgba(255,255,255,0.15)",
+            background: "transparent",
+            color: "rgba(255,255,255,0.9)",
+            borderRadius: 8,
+            padding: "6px 10px",
+            cursor: "pointer",
+          }}
+        >
+          fermer
+        </button>
+        <button
+          onClick={onWatch}
+          style={{
+            border: "1px solid rgba(120,200,255,0.45)",
+            background: "rgba(120,200,255,0.14)",
+            color: "#e8f7ff",
+            borderRadius: 8,
+            padding: "6px 10px",
+            cursor: "pointer",
+          }}
+        >
+          regarder
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function VideoOverlay({
   title,
   src,
@@ -381,6 +621,8 @@ function VideoOverlay({
   src: string;
   onClose: () => void;
 }) {
+  const [videoError, setVideoError] = useState<string | null>(null);
+
   return (
     <div
       style={{
@@ -426,11 +668,20 @@ function VideoOverlay({
         </button>
         <div style={{ color: "rgba(255,255,255,0.88)", fontSize: 12, margin: "2px 4px 8px 4px" }}>{title}</div>
         <video
+          key={src}
           controls
           autoPlay
+          muted
+          playsInline
+          preload="auto"
           src={src}
+          onLoadedData={() => setVideoError(null)}
+          onError={() => setVideoError("Impossible de lire cette vidéo dans le navigateur.")}
           style={{ width: "100%", height: "auto", maxHeight: "72vh", borderRadius: 8, background: "black" }}
         />
+        {videoError && (
+          <div style={{ color: "#ffb4b4", fontSize: 12, margin: "8px 4px 0 4px" }}>{videoError}</div>
+        )}
       </div>
     </div>
   );
@@ -540,6 +791,101 @@ function UnitModal({
   );
 }
 
+function MissionOrderModal({
+  draft,
+  onClose,
+  onChange,
+  onSend,
+}: {
+  draft: MissionOrderDraft | null;
+  onClose: () => void;
+  onChange: (next: MissionOrderDraft) => void;
+  onSend: () => void;
+}) {
+  if (!draft) return null;
+
+  return (
+    <div style={backdrop} onClick={onClose}>
+      <div
+        style={{
+          ...modal,
+          width: "min(92vw, 980px)",
+          maxHeight: "88vh",
+          overflow: "auto",
+          zIndex: 32000,
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+          <div>
+            <div style={{ fontWeight: 800, letterSpacing: 0.2 }}>{draft.title}</div>
+            <div style={{ fontSize: 12, opacity: 0.85, marginTop: 4 }}>Drone sélectionné : {draft.droneName}</div>
+          </div>
+          <button style={closeBtn} onClick={onClose}>
+            ✕
+          </button>
+        </div>
+
+        <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
+          <div>
+            <label style={label}>1. SITUATION</label>
+            <textarea
+              style={{ ...input, minHeight: 96, resize: "vertical", whiteSpace: "pre-wrap" }}
+              value={draft.situation}
+              onChange={(e) => onChange({ ...draft, situation: e.target.value })}
+            />
+          </div>
+
+          <div>
+            <label style={label}>2. MISSION</label>
+            <textarea
+              style={{ ...input, minHeight: 190, resize: "vertical", whiteSpace: "pre-wrap" }}
+              value={draft.mission}
+              onChange={(e) => onChange({ ...draft, mission: e.target.value })}
+            />
+          </div>
+
+          <div>
+            <label style={label}>3. EXÉCUTION</label>
+            <textarea
+              style={{ ...input, minHeight: 320, resize: "vertical", whiteSpace: "pre-wrap" }}
+              value={draft.execution}
+              onChange={(e) => onChange({ ...draft, execution: e.target.value })}
+            />
+          </div>
+
+          <div>
+            <label style={label}>4. SOUTIEN</label>
+            <textarea
+              style={{ ...input, minHeight: 130, resize: "vertical", whiteSpace: "pre-wrap" }}
+              value={draft.soutien}
+              onChange={(e) => onChange({ ...draft, soutien: e.target.value })}
+            />
+          </div>
+
+          <div>
+            <label style={label}>5. COMMANDEMENT & TRANSMISSIONS</label>
+            <textarea
+              style={{ ...input, minHeight: 160, resize: "vertical", whiteSpace: "pre-wrap" }}
+              value={draft.commandementTransmissions}
+              onChange={(e) => onChange({ ...draft, commandementTransmissions: e.target.value })}
+            />
+          </div>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 14 }}>
+          <button style={secondaryBtn} onClick={onClose}>
+            Fermer
+          </button>
+          <button style={primaryBtn} onClick={onSend}>
+            Envoyer
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const backdrop: React.CSSProperties = {
   position: "absolute",
   inset: 0,
@@ -588,9 +934,19 @@ export default function App() {
   const [scenarioResetting, setScenarioResetting] = useState(false);
   const [scenarioAlertOpen, setScenarioAlertOpen] = useState(false);
   const [scenarioHQFeature, setScenarioHQFeature] = useState<PointFeature<UnitProps> | null>(null);
+  const [scenarioHQRevealed, setScenarioHQRevealed] = useState(false);
   const [mapFocusRequest, setMapFocusRequest] = useState<FocusRequest | null>(null);
   const [selectedUnitId, setSelectedUnitId] = useState<string | null>(null);
+  const [hoveredReconUnitName, setHoveredReconUnitName] = useState<string | null>(null);
   const [videoOverlay, setVideoOverlay] = useState<{ title: string; url: string } | null>(null);
+  const [missionOrderDraft, setMissionOrderDraft] = useState<MissionOrderDraft | null>(null);
+  const [reconOrderGraphic, setReconOrderGraphic] = useState<ReconOrderGraphic | null>(null);
+  const [orderSentNoticeOpen, setOrderSentNoticeOpen] = useState(false);
+  const [droneDataAlert, setDroneDataAlert] = useState<{ open: boolean; droneName: string }>({
+    open: false,
+    droneName: "UAV-REC-001",
+  });
+  const [externalChatPrompt, setExternalChatPrompt] = useState<ExternalChatPrompt | null>(null);
 
   const [unitModalOpen, setUnitModalOpen] = useState(false);
   const [placing, setPlacing] = useState<UnitDraft | null>(null);
@@ -599,6 +955,8 @@ export default function App() {
   const alertTimerRef = useRef<number | null>(null);
   const initialScenarioScheduledRef = useRef(false);
   const focusSequenceRef = useRef(0);
+  const flightTimerRef = useRef<number | null>(null);
+  const externalPromptSeqRef = useRef(0);
 
   const load = useCallback(async (): Promise<FeatureCollection | null> => {
     try {
@@ -612,6 +970,44 @@ export default function App() {
     }
   }, []);
 
+  const unitFeatures = useMemo(() => (units?.features ?? []) as Array<PointFeature<UnitProps>>, [units]);
+  const visibleUnitFeatures = useMemo(() => {
+    if (scenarioHQRevealed) return unitFeatures;
+    return unitFeatures.filter((f) => {
+      if (scenarioHQFeature && f.properties.id === scenarioHQFeature.properties.id) return false;
+      return normalizeUnitName(f.properties.name) !== SCENARIO_HQ.name;
+    });
+  }, [scenarioHQFeature, scenarioHQRevealed, unitFeatures]);
+  const selectedUnit = useMemo(
+    () => unitFeatures.find((f) => f.properties.id === selectedUnitId) ?? null,
+    [selectedUnitId, unitFeatures]
+  );
+
+  const updateUnitPosition = useCallback((unitId: string, lat: number, lon: number) => {
+    setUnits((prev) => {
+      if (!prev) return prev;
+      const nextFeatures = prev.features.map((feature) => {
+        const point = feature as PointFeature<UnitProps>;
+        if (point.properties.id !== unitId || point.geometry.type !== "Point") return feature;
+        return {
+          ...point,
+          geometry: {
+            ...point.geometry,
+            coordinates: [lon, lat],
+          },
+        };
+      });
+      return { ...prev, features: nextFeatures };
+    });
+  }, []);
+
+  const stopFlightSimulation = useCallback(() => {
+    if (flightTimerRef.current !== null) {
+      window.clearInterval(flightTimerRef.current);
+      flightTimerRef.current = null;
+    }
+  }, []);
+
   const scheduleScenarioAlert = useCallback((collection: FeatureCollection | null) => {
     if (alertTimerRef.current !== null) {
       window.clearTimeout(alertTimerRef.current);
@@ -620,6 +1016,7 @@ export default function App() {
 
     setScenarioAlertOpen(false);
     setSelectedUnitId(null);
+    setScenarioHQRevealed(false);
 
     const features = (collection?.features ?? []) as Array<PointFeature<UnitProps>>;
     const hq = findScenarioHQFeature(features);
@@ -628,6 +1025,7 @@ export default function App() {
     if (!hq) return;
 
     alertTimerRef.current = window.setTimeout(() => {
+      setScenarioHQRevealed(true);
       setScenarioAlertOpen(true);
     }, 5000);
   }, []);
@@ -637,8 +1035,9 @@ export default function App() {
       if (alertTimerRef.current !== null) {
         window.clearTimeout(alertTimerRef.current);
       }
+      stopFlightSimulation();
     };
-  }, []);
+  }, [stopFlightSimulation]);
 
   useEffect(() => {
     void (async () => {
@@ -648,7 +1047,7 @@ export default function App() {
         scheduleScenarioAlert(loaded);
       }
     })();
-  }, [load, scheduleScenarioAlert]);
+  }, [load, scheduleScenarioAlert, stopFlightSimulation]);
 
   useEffect(() => {
     let stopped = false;
@@ -665,8 +1064,15 @@ export default function App() {
 
         if (bootIdRef.current !== status.boot_id) {
           bootIdRef.current = status.boot_id;
+          stopFlightSimulation();
           setPlacing(null);
           setUnitModalOpen(false);
+          setHoveredReconUnitName(null);
+          setMissionOrderDraft(null);
+          setReconOrderGraphic(null);
+          setOrderSentNoticeOpen(false);
+          setDroneDataAlert({ open: false, droneName: "UAV-REC-001" });
+          setExternalChatPrompt(null);
           setVideoOverlay(null);
           setChatResetToken((v) => v + 1);
           const loaded = await load();
@@ -696,8 +1102,15 @@ export default function App() {
       setError(null);
       try {
         await resetScenario();
+        stopFlightSimulation();
         setPlacing(null);
         setUnitModalOpen(false);
+        setHoveredReconUnitName(null);
+        setMissionOrderDraft(null);
+        setReconOrderGraphic(null);
+        setOrderSentNoticeOpen(false);
+        setDroneDataAlert({ open: false, droneName: "UAV-REC-001" });
+        setExternalChatPrompt(null);
         setVideoOverlay(null);
         setChatResetToken((v) => v + 1);
         const loaded = await load();
@@ -708,7 +1121,7 @@ export default function App() {
         setScenarioResetting(false);
       }
     })();
-  }, [load, scenarioResetting, scheduleScenarioAlert]);
+  }, [load, scenarioResetting, scheduleScenarioAlert, stopFlightSimulation]);
 
   const handleSeeOnMap = useCallback(() => {
     if (!scenarioHQFeature) {
@@ -716,6 +1129,7 @@ export default function App() {
       return;
     }
 
+    setScenarioHQRevealed(true);
     const [lon, lat] = scenarioHQFeature.geometry.coordinates;
     setSelectedUnitId(scenarioHQFeature.properties.id);
     focusSequenceRef.current += 1;
@@ -723,16 +1137,200 @@ export default function App() {
     setScenarioAlertOpen(false);
   }, [scenarioHQFeature]);
 
-  const handleChatLinkClick = useCallback((url: string) => {
+  const handleChatLinkClick = useCallback((url: string, label?: string) => {
+    const reconUnitName = reconUnitNameFromLink(url);
+    if (reconUnitName) {
+      const target = unitFeatures.find(
+        (f) => f.properties.unit_type === "UAS_RECON" && normalizeUnitName(f.properties.name) === reconUnitName
+      );
+
+      if (!target) {
+        setError(`Drone ${reconUnitName} introuvable sur la carte.`);
+        return;
+      }
+
+      const [lon, lat] = target.geometry.coordinates;
+      setError(null);
+      setSelectedUnitId(target.properties.id);
+      focusSequenceRef.current += 1;
+      setMapFocusRequest({ key: focusSequenceRef.current, lat, lon });
+      return;
+    }
+
     const resolved = url.startsWith("http://") || url.startsWith("https://") ? url : `${API_BASE}${url}`;
     const lower = resolved.toLowerCase();
     if (lower.endsWith(".mkv") || lower.includes("/media/")) {
-      const title = resolved.split("/").pop() ?? "video";
+      const title = label && label.trim() ? label.trim() : resolved.split("/").pop() ?? "video";
       setVideoOverlay({ title, url: resolved });
       return;
     }
     window.open(resolved, "_blank", "noopener,noreferrer");
+  }, [unitFeatures]);
+
+  const handleChatLinkHover = useCallback((url: string, isHovering: boolean) => {
+    const reconUnitName = reconUnitNameFromLink(url);
+    if (!reconUnitName) return;
+    setHoveredReconUnitName(isHovering ? reconUnitName : null);
   }, []);
+
+  const handleChatActions = useCallback(
+    (actions: ChatAction[]) => {
+      for (const action of actions) {
+        if (action.type === "confirm_hq_enemy") {
+          const payload = action.payload ?? {};
+          const targetName = normalizeUnitName(payloadString(payload, "name", SCENARIO_HQ.name));
+          const hq = unitFeatures.find((f) => normalizeUnitName(f.properties.name) === targetName);
+          if (!hq) {
+            setError(`Unité ${targetName} introuvable pour confirmation ENEMY.`);
+            continue;
+          }
+
+          const enemySidc = sidcFor({
+            name: hq.properties.name,
+            side: "ENEMY",
+            unit_type: hq.properties.unit_type,
+            echelon: hq.properties.echelon ?? "SECTION",
+            sidc: hq.properties.sidc ?? "",
+          });
+
+          void (async () => {
+            try {
+              await updateUnit(hq.properties.id, { side: "ENEMY", sidc: enemySidc });
+              const loaded = await load();
+              const features = (loaded?.features ?? []) as Array<PointFeature<UnitProps>>;
+              setScenarioHQFeature(findScenarioHQFeature(features));
+              if (selectedUnitId === hq.properties.id) {
+                setSelectedUnitId(null);
+              }
+              setError(null);
+            } catch (err) {
+              setError(err instanceof Error ? err.message : "Erreur confirmation HQ ennemi");
+            }
+          })();
+          continue;
+        }
+
+        if (action.type !== "draft_recon_order") continue;
+
+        if (!selectedUnit || selectedUnit.properties.unit_type !== "UAS_RECON") {
+          setError("Sélectionne un drone UAS - Recon sur la carte avant de générer un ordre.");
+          continue;
+        }
+
+        const payload = action.payload ?? {};
+        setMissionOrderDraft({
+          title: payloadString(payload, "title", "ORDRE DE MISSION – DRONE DE RECONNAISSANCE"),
+          situation: payloadString(payload, "situation", ""),
+          mission: payloadString(payload, "mission", ""),
+          execution: payloadString(payload, "execution", ""),
+          soutien: payloadString(payload, "soutien", ""),
+          commandementTransmissions: payloadString(payload, "commandement_transmissions", ""),
+          droneId: selectedUnit.properties.id,
+          droneName: selectedUnit.properties.name,
+        });
+        setError(null);
+      }
+    },
+    [load, selectedUnit, selectedUnitId, unitFeatures]
+  );
+
+  const handleSendMissionOrder = useCallback(() => {
+    if (!missionOrderDraft) return;
+
+    const drone = unitFeatures.find(
+      (f) => f.properties.id === missionOrderDraft.droneId && f.properties.unit_type === "UAS_RECON"
+    );
+    if (!drone) {
+      setError("Drone de reconnaissance sélectionné introuvable.");
+      return;
+    }
+
+    const hq = scenarioHQFeature ?? findScenarioHQFeature(unitFeatures);
+    if (!hq) {
+      setError("Poste de commandement cible introuvable sur la carte.");
+      return;
+    }
+
+    const [droneLon, droneLat] = drone.geometry.coordinates;
+    const [hqLon, hqLat] = hq.geometry.coordinates;
+    const start: [number, number] = [droneLat, droneLon];
+    const target: [number, number] = [hqLat, hqLon];
+
+    stopFlightSimulation();
+    markerRefs.current[drone.properties.id]?.closePopup();
+    if (selectedUnitId) {
+      markerRefs.current[selectedUnitId]?.closePopup();
+    }
+
+    setReconOrderGraphic({
+      droneId: drone.properties.id,
+      droneName: drone.properties.name,
+      from: start,
+      to: target,
+    });
+    setMissionOrderDraft(null);
+    setOrderSentNoticeOpen(true);
+    setSelectedUnitId(null);
+    setDroneDataAlert({ open: false, droneName: drone.properties.name });
+    setError(null);
+
+    const tickMs = 120;
+    const approachSpeedMps = 220;
+    const orbitRadiusM = 800;
+    const orbitDurationMs = 5000;
+    const orbitAngularSpeed = (Math.PI * 2) / (orbitDurationMs / 1000);
+
+    let currentPos: [number, number] = start;
+    let stage: "approach" | "orbit" = "approach";
+    let orbitStartTs = 0;
+    let orbitStartAngle = bearingRadians(target, start);
+    let orbitAlertSent = false;
+
+    flightTimerRef.current = window.setInterval(() => {
+      if (stage === "approach") {
+        const distToTarget = haversineMeters(currentPos, target);
+        if (distToTarget <= orbitRadiusM) {
+          stage = "orbit";
+          orbitStartTs = Date.now();
+          orbitStartAngle = bearingRadians(target, currentPos);
+        } else {
+          const allowed = Math.max(0, distToTarget - orbitRadiusM);
+          const step = Math.min((approachSpeedMps * tickMs) / 1000, allowed);
+          currentPos = moveTowards(currentPos, target, step);
+          updateUnitPosition(drone.properties.id, currentPos[0], currentPos[1]);
+          setReconOrderGraphic((prev) =>
+            prev && prev.droneId === drone.properties.id ? { ...prev, from: currentPos } : prev
+          );
+          return;
+        }
+      }
+
+      if (stage === "orbit") {
+        const elapsedMs = Date.now() - orbitStartTs;
+        if (!orbitAlertSent && elapsedMs >= orbitDurationMs) {
+          orbitAlertSent = true;
+          setDroneDataAlert({ open: true, droneName: drone.properties.name });
+        }
+        const angle = orbitStartAngle + orbitAngularSpeed * (elapsedMs / 1000);
+        currentPos = destinationPoint(target, orbitRadiusM, angle);
+        updateUnitPosition(drone.properties.id, currentPos[0], currentPos[1]);
+        setReconOrderGraphic((prev) =>
+          prev && prev.droneId === drone.properties.id ? { ...prev, from: currentPos } : prev
+        );
+      }
+    }, tickMs);
+  }, [missionOrderDraft, scenarioHQFeature, selectedUnitId, stopFlightSimulation, unitFeatures, updateUnitPosition]);
+
+  const triggerExternalChatPrompt = useCallback((content: string) => {
+    externalPromptSeqRef.current += 1;
+    setExternalChatPrompt({ key: externalPromptSeqRef.current, content });
+  }, []);
+
+  const handleWatchDroneData = useCallback(() => {
+    const droneName = droneDataAlert.droneName || "UAV-REC-001";
+    setDroneDataAlert((prev) => ({ ...prev, open: false }));
+    triggerExternalChatPrompt(`Regarder nouvelle donnée ${droneName}`);
+  }, [droneDataAlert.droneName, triggerExternalChatPrompt]);
 
   const handleUnitRightClickDelete = useCallback(
     async (unitId: string, unitName: string) => {
@@ -744,21 +1342,22 @@ export default function App() {
         if (selectedUnitId === unitId) {
           setSelectedUnitId(null);
         }
+        if (reconOrderGraphic?.droneId === unitId) {
+          setReconOrderGraphic(null);
+        }
         await load();
       } catch (err) {
         setError(err instanceof Error ? err.message : "Erreur suppression unite");
       }
     },
-    [load, selectedUnitId]
+    [load, reconOrderGraphic?.droneId, selectedUnitId]
   );
-
-  const unitFeatures = useMemo(() => (units?.features ?? []) as Array<PointFeature<UnitProps>>, [units]);
 
   useEffect(() => {
     if (!selectedUnitId) return;
     const marker = markerRefs.current[selectedUnitId];
     if (marker) marker.openPopup();
-  }, [selectedUnitId, unitFeatures]);
+  }, [selectedUnitId, visibleUnitFeatures]);
 
   return (
     <div style={{ display: "flex", height: "100vh", width: "100vw", overflow: "hidden" }}>
@@ -776,10 +1375,9 @@ export default function App() {
         <ChatPanel
           resetToken={chatResetToken}
           onLinkClick={handleChatLinkClick}
-          onActions={(actions) => {
-            // Pour l’instant on log ; ensuite on dispatchera vers createUnit/load/etc.
-            console.log("Chat actions:", actions);
-          }}
+          onLinkHover={handleChatLinkHover}
+          externalPrompt={externalChatPrompt}
+          onActions={handleChatActions}
         />
       </div>
 
@@ -811,7 +1409,7 @@ export default function App() {
           />
 
           {/* Units */}
-          {unitFeatures.map((f) => {
+          {visibleUnitFeatures.map((f) => {
             const [lon, lat] = f.geometry.coordinates;
             const fallbackSidc = sidcFor({
               name: f.properties.name,
@@ -821,14 +1419,23 @@ export default function App() {
               sidc: "",
             });
             const sidc = f.properties.sidc && new ms.Symbol(f.properties.sidc).isValid() ? f.properties.sidc : fallbackSidc;
-            const icon = makeApp6Icon(sidc, zoom);
+            const isReconHighlighted =
+              hoveredReconUnitName !== null &&
+              f.properties.unit_type === "UAS_RECON" &&
+              normalizeUnitName(f.properties.name) === hoveredReconUnitName;
+            const icon = makeApp6Icon(sidc, zoom, isReconHighlighted);
 
             return (
               <Marker
                 key={f.properties.id}
                 position={[lat, lon]}
                 icon={icon}
+                zIndexOffset={isReconHighlighted ? 1000 : 0}
                 eventHandlers={{
+                  click: () => {
+                    if (reconOrderGraphic?.droneId === f.properties.id) return;
+                    setSelectedUnitId(f.properties.id);
+                  },
                   contextmenu: (e) => {
                     if (e.originalEvent) {
                       L.DomEvent.preventDefault(e.originalEvent);
@@ -856,6 +1463,29 @@ export default function App() {
               </Marker>
             );
           })}
+
+          {reconOrderGraphic && (
+            <>
+              <Polyline
+                positions={[reconOrderGraphic.from, reconOrderGraphic.to]}
+                pathOptions={{
+                  color: "#76c7ff",
+                  weight: 3,
+                  opacity: 0.95,
+                  dashArray: "10 8",
+                }}
+              >
+                <Tooltip
+                  permanent
+                  direction="center"
+                  offset={[0, -4]}
+                  className="app6-order-label"
+                >
+                  ORDRE APP6 RECO
+                </Tooltip>
+              </Polyline>
+            </>
+          )}
         </MapContainer>
 
         <RightToolbar
@@ -879,6 +1509,13 @@ export default function App() {
           onSeeOnMap={handleSeeOnMap}
           onClose={() => setScenarioAlertOpen(false)}
         />
+        <OrderSentNotice open={orderSentNoticeOpen} onClose={() => setOrderSentNoticeOpen(false)} />
+        <DroneDataAlert
+          open={droneDataAlert.open}
+          droneName={droneDataAlert.droneName}
+          onClose={() => setDroneDataAlert((prev) => ({ ...prev, open: false }))}
+          onWatch={handleWatchDroneData}
+        />
 
         {/* HUD */}
         <div
@@ -900,13 +1537,27 @@ export default function App() {
             {placing ? `Placement: click map to place ${placing.name}` : "Ready"}
           </div>
           {scenarioResetting && <div style={{ fontSize: 12, marginTop: 4 }}>Reset scénario en cours…</div>}
-          <div style={{ fontSize: 12, marginTop: 6 }}>Units: {unitFeatures.length}</div>
+          <div style={{ fontSize: 12, marginTop: 6 }}>Units: {visibleUnitFeatures.length}</div>
           {error && <div style={{ marginTop: 6, color: "#ffb4b4" }}>{error}</div>}
         </div>
 
         <style>{`
           .app6-marker { background: transparent; border: none; }
           .app6-marker svg { display:block; }
+          .app6-marker-highlighted svg {
+            filter: drop-shadow(0 0 6px rgba(255, 215, 0, 0.95)) drop-shadow(0 0 14px rgba(255, 215, 0, 0.7));
+            transform: scale(1.08);
+          }
+          .app6-order-label {
+            background: rgba(8, 25, 40, 0.82);
+            color: #bfe7ff;
+            border: 1px solid rgba(118, 199, 255, 0.45);
+            border-radius: 6px;
+            padding: 2px 6px;
+            font-size: 11px;
+            font-weight: 700;
+            box-shadow: 0 0 8px rgba(0, 0, 0, 0.35);
+          }
           .leaflet-container { z-index: 0; }
         `}</style>
       </div>
@@ -914,6 +1565,12 @@ export default function App() {
       {videoOverlay && (
         <VideoOverlay title={videoOverlay.title} src={videoOverlay.url} onClose={() => setVideoOverlay(null)} />
       )}
+      <MissionOrderModal
+        draft={missionOrderDraft}
+        onClose={() => setMissionOrderDraft(null)}
+        onChange={setMissionOrderDraft}
+        onSend={handleSendMissionOrder}
+      />
     </div>
   );
 }

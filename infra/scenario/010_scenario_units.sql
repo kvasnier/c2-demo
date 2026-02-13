@@ -32,9 +32,9 @@ INSERT INTO public.units (id, name, side, unit_type, echelon, sidc, geom, create
 INSERT INTO public.units (id, name, side, unit_type, echelon, sidc, geom, created_at) VALUES ('5745d442-1f4f-4817-9c89-32995af9ed41', 'UAV-REC-001', 'FRIEND', 'UAS_RECON', 'SECTION', 'SFAPMFQR---C', '0101000020E61000000100000015F5434070D74A94E71F4840', '2026-02-13 19:50:24.435833+00');
 INSERT INTO public.units (id, name, side, unit_type, echelon, sidc, geom, created_at) VALUES ('2d8f8a96-6a1b-4d07-b845-0c20253f02ca', 'UAV-REC-002', 'FRIEND', 'UAS_RECON', 'SECTION', 'SFAPMFQR---C', '0101000020E6100000010000802BF5434034A039DB5A224840', '2026-02-13 19:50:35.406606+00');
 INSERT INTO public.units (id, name, side, unit_type, echelon, sidc, geom, created_at) VALUES ('ae21417f-d191-4ca0-816c-098d9ad49ac3', 'UAV-REC-003', 'FRIEND', 'UAS_RECON', 'SECTION', 'SFAPMFQR---C', '0101000020E6100000000000D0DCF343409B2737F1091E4840', '2026-02-13 19:50:44.87563+00');
+INSERT INTO public.units (id, name, side, unit_type, echelon, sidc, geom, created_at) VALUES ('3079209f-20f1-4d5a-ac56-65322caef04c', 'RUS-HQ-COMINT', 'UNKNOWN', 'COMMAND_POST', 'BRIGADE', 'SUGPUH1----H', '0101000020E610000000529B38B9F94340A1DB4B1AA31F4840', '2026-02-13 18:12:00+00');
 
 
 --
 -- PostgreSQL database dump complete
 --
-

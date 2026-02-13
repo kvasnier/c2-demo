@@ -111,6 +111,35 @@ class UnitCreate(BaseModel):
             raise ValueError(f"Invalid echelon: {value}")
         return v
 
+
+class UnitUpdate(BaseModel):
+    side: str | None = None
+    sidc: str | None = None
+
+    @field_validator("side")
+    @classmethod
+    def validate_side(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        v = value.strip().upper()
+        if v == "ENNEMY":
+            v = "ENEMY"
+        if v == "UKNOWN":
+            v = "UNKNOWN"
+        if v not in SIDE_VALUES:
+            raise ValueError(f"Invalid side: {value}")
+        return v
+
+    @field_validator("sidc")
+    @classmethod
+    def validate_sidc(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        v = value.strip()
+        if not v:
+            raise ValueError("sidc cannot be empty")
+        return v
+
 async def get_conn():
     return await asyncpg.connect(DATABASE_URL)
 
@@ -194,8 +223,17 @@ async def get_media(filename: str):
         raise HTTPException(status_code=404, detail="Media file not found")
 
     suffix = media_path.suffix.lower()
-    media_type = "video/x-matroska" if suffix == ".mkv" else None
-    return FileResponse(str(media_path), media_type=media_type, filename=safe_name)
+    media_type = (
+        "video/x-matroska" if suffix == ".mkv"
+        else "video/mp4" if suffix == ".mp4"
+        else None
+    )
+    return FileResponse(
+        str(media_path),
+        media_type=media_type,
+        filename=safe_name,
+        content_disposition_type="inline",
+    )
 
 def load_scenario_insert_statements(path: str) -> list[str]:
     if not os.path.exists(path):
@@ -318,6 +356,36 @@ async def create_unit(payload: UnitCreate):
         class R(dict):
             def __getitem__(self, k): return dict.get(self, k)
         return to_feature(R(row))
+    finally:
+        await conn.close()
+
+
+@app.patch("/units/{unit_id}")
+async def update_unit(unit_id: UUID, payload: UnitUpdate):
+    if payload.side is None and payload.sidc is None:
+        raise HTTPException(status_code=400, detail="No updatable fields provided")
+
+    conn = await get_conn()
+    try:
+        row = await conn.fetchrow(
+            """
+            UPDATE units
+            SET
+              side = COALESCE($2, side),
+              sidc = COALESCE($3, sidc)
+            WHERE id = $1
+            RETURNING
+              id, name, side, unit_type, echelon, sidc,
+              ST_Y(geom)::float8 AS lat,
+              ST_X(geom)::float8 AS lon
+            """,
+            unit_id,
+            payload.side,
+            payload.sidc,
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="Unit not found")
+        return to_feature(row)
     finally:
         await conn.close()
 
