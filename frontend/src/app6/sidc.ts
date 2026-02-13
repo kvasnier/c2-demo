@@ -5,18 +5,25 @@ import type { Affiliation, UnitType, Echelon } from "../types/unit";
  * On pourra raffiner plus tard (status, HQ, mobilité, etc).
  */
 export function sidcFor(aff: Affiliation, type: UnitType, echelon: Echelon): string {
-  // NOTE: codes “démo” — le but ici est d’avoir un rendu cohérent et extensible.
-  // Si tu as une table SIDC précise, on remplacera ce mapping.
-  const affCode = aff === "FRIEND" ? "F" : aff === "HOSTILE" ? "H" : "N";
+  const affCode = aff === "FRIEND" ? "F" : aff === "HOSTILE" ? "H" : aff === "NEUTRAL" ? "N" : "U";
+  const modifier2 = echelon === "SECTION" ? "C" : echelon === "BATTALION" ? "F" : "H";
 
-  // “typeCode” arbitraire MVP (on ajustera)
-  const typeCode = type === "INFANTRY" ? "INF" : type === "ARMOR" ? "ARM" : type === "ARTILLERY" ? "ART" : "UAS";
+  const base =
+    type === "INFANTRY"
+      ? { dimension: "G", functionId: "UCI---" }
+      : type === "ARMOR"
+        ? { dimension: "G", functionId: "UCA---" }
+        : type === "ARTILLERY"
+          ? { dimension: "G", functionId: "UCF---" }
+          : type === "COMMAND_POST"
+            ? { dimension: "G", functionId: "UH1---" }
+            : type === "UAS_RECON"
+              ? { dimension: "A", functionId: "MFQR--" }
+              : type === "UAS_ATTACK"
+                ? { dimension: "A", functionId: "MFQA--" }
+                : type === "UAS_VTOL"
+                  ? { dimension: "A", functionId: "MFQL--" }
+                  : { dimension: "A", functionId: "MFQ---" };
 
-  // idem echelon
-  const echCode = echelon === "SECTION" ? "SEC" : echelon === "BATTALION" ? "BN" : "BDE";
-
-  // Pour milsymbol, idéalement on met un vrai SIDC.
-  // Ici on retourne une string stable qui servira déjà à afficher/varier.
-  // Prochaine itération: vraie composition SIDC APP-6.
-  return `${affCode}-${typeCode}-${echCode}`;
+  return `S${affCode}${base.dimension}P${base.functionId}-${modifier2}`;
 }
